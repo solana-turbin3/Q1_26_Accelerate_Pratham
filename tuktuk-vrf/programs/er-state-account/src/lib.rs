@@ -9,7 +9,7 @@ mod state;
 
 use instructions::*;
 
-declare_id!("5VyyMZbqPhUFEaM3GVrEYBHwMBLPfH9PkyoS82o9zpG8");
+declare_id!("2DLPhRMLhZuWimqXRi87gQh3UwpyJQT6QBnBEGvD7ET2");
 
 #[ephemeral]
 #[program]
@@ -54,12 +54,12 @@ pub mod er_state_account {
     }
 
     pub fn request_randomness(ctx: Context<RequestRandomness>) -> Result<()> {
-        ctx.accounts.request_randomness();
+        ctx.accounts.request_randomness()?;
         Ok(())
     }
 
     pub fn consume_randomness(ctx: Context<ConsumeRandomness>, randomness: [u8; 32]) -> Result<()> {
-        ctx.accounts.consume_randomness(randomness);
+        ctx.accounts.consume_randomness(randomness)?;
         Ok(())
     }
 }
