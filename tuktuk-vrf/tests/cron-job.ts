@@ -5,9 +5,9 @@ import {
   init,
   createTaskQueue,
   getTaskQueueForName,
-  queueTask,
   compileTransaction,
   taskQueueAuthorityKey,
+  taskKey,
 } from "@helium/tuktuk-sdk";
 import { ErStateAccount } from "../target/types/er_state_account";
 
@@ -15,6 +15,17 @@ import { ErStateAccount } from "../target/types/er_state_account";
 const DEFAULT_QUEUE = new PublicKey(
   "G9eLe2CBmLGUTMVbSsJmoGNE4VCXB7XT3TmSwXMiySk2"
 );
+
+// TukTuk Program ID
+const TUKTUK_PROGRAM_ID = new PublicKey(
+  "tuktukUrfhXT6ZT77QTU8RQtvgL967uRuVagWF57zVA"
+);
+
+// TukTuk Config PDA
+const TUKTUK_CONFIG = PublicKey.findProgramAddressSync(
+  [Buffer.from("tuktuk_config")],
+  TUKTUK_PROGRAM_ID
+)[0];
 
 describe("Perpetual Lottery Cron", () => {
   const provider = anchor.AnchorProvider.env();
@@ -28,6 +39,12 @@ describe("Perpetual Lottery Cron", () => {
   // User Account PDA
   const [userAccountPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("user"), payer.publicKey.toBuffer()],
+    program.programId
+  );
+
+  // Queue Authority PDA (our program's)
+  const [queueAuthorityPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("queue_authority")],
     program.programId
   );
 
@@ -64,17 +81,17 @@ describe("Perpetual Lottery Cron", () => {
       }
     }
 
-    // Ensure queue authority exists
-    const queueAuthority = taskQueueAuthorityKey(
+    // Ensure payer's queue authority exists
+    const payerQueueAuthority = taskQueueAuthorityKey(
       taskQueuePda,
       payer.publicKey
     )[0];
-    const queueAuthorityAccount =
+    const payerQueueAuthorityAccount =
       await tuktukProgram.account.taskQueueAuthorityV0.fetchNullable(
-        queueAuthority
+        payerQueueAuthority
       );
-    if (!queueAuthorityAccount) {
-      console.log("   Adding queue authority...");
+    if (!payerQueueAuthorityAccount) {
+      console.log("   Adding payer queue authority...");
       await tuktukProgram.methods
         .addQueueAuthorityV0()
         .accounts({
@@ -85,9 +102,52 @@ describe("Perpetual Lottery Cron", () => {
         .rpc({ skipPreflight: true });
       console.log("   ✅ Queue Authority added!");
     }
+
+    // Ensure our program's queue_authority PDA is also registered
+    // (needed for on-chain CPI — the PDA signs the queue_task_v0 call)
+    const programQueueAuthority = taskQueueAuthorityKey(
+      taskQueuePda,
+      queueAuthorityPda
+    )[0];
+    const programQueueAuthorityAccount =
+      await tuktukProgram.account.taskQueueAuthorityV0.fetchNullable(
+        programQueueAuthority
+      );
+    if (!programQueueAuthorityAccount) {
+      console.log("   Adding program PDA queue authority...");
+      await tuktukProgram.methods
+        .addQueueAuthorityV0()
+        .accounts({
+          payer: payer.publicKey,
+          queueAuthority: queueAuthorityPda,
+          taskQueue: taskQueuePda,
+        })
+        .rpc({ skipPreflight: true });
+      console.log("   ✅ Program Queue Authority added!");
+    }
   });
 
-  it("Queues a VRF Task", async () => {
+  it("Initializes User Account (if needed)", async () => {
+    // Schedule instruction requires an initialized UserAccount PDA
+    const userAccount = await program.account.userAccount.fetchNullable(
+      userAccountPda
+    );
+    if (!userAccount) {
+      await program.methods
+        .initialize()
+        .accountsPartial({
+          user: payer.publicKey,
+          userAccount: userAccountPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc({ skipPreflight: true });
+      console.log("✅ User Account Initialized:", userAccountPda.toBase58());
+    } else {
+      console.log("✅ User Account already exists:", userAccountPda.toBase58());
+    }
+  });
+
+  it("Schedules VRF Task via On-Chain Instruction", async () => {
     const tuktukProgram = await init(provider);
 
     // Resolve queue if not set
@@ -108,43 +168,92 @@ describe("Perpetual Lottery Cron", () => {
       })
       .instruction();
 
-    // Compile for TukTuk (serializes ix into CompiledTransactionV0 format)
-    const { transaction, remainingAccounts } = compileTransaction([ix], []);
+    // Compile for TukTuk format
+    const { transaction: compiledTx, remainingAccounts } = compileTransaction(
+      [ix],
+      []
+    );
 
-    // Queue the task with "now" trigger (execute immediately)
-    // NOTE: For cron scheduling, use @helium/cron-sdk (separate package)
-    const methodsBuilder = await queueTask(tuktukProgram, {
-      taskQueue: taskQueuePda,
-      args: {
-        trigger: { now: {} },
-        transaction: { compiledV0: [transaction] },
-      },
-    });
+    // TukTuk's queue_task_v0 reads remaining_accounts from CPI context
+    // and extends compiled_tx.accounts with them — so we pass accounts=[]
+    // in the compiled tx and forward remainingAccounts via our program's remaining_accounts
 
-    // Extract instruction (avoids Anchor version mismatch between SDK and project)
-    const queueIx = await methodsBuilder
-      .remainingAccounts(remainingAccounts)
-      .instruction();
+    // Find next available task ID
+    const taskQueueAcc = await tuktukProgram.account.taskQueueV0.fetch(
+      taskQueuePda
+    );
+    let taskId = 0;
+    for (let i = 0; i < taskQueueAcc.capacity; i++) {
+      const byteIdx = Math.floor(i / 8);
+      const bitIdx = i % 8;
+      if ((taskQueueAcc.taskBitmap[byteIdx] & (1 << bitIdx)) === 0) {
+        taskId = i;
+        break;
+      }
+    }
+
+    // Derive task PDA
+    const [taskPda] = taskKey(taskQueuePda, taskId);
+
+    // Derive TukTuk's task queue authority PDA
+    const [tuktukTaskQueueAuthority] = taskQueueAuthorityKey(
+      taskQueuePda,
+      queueAuthorityPda
+    );
+
+    console.log("📋 Schedule details:");
+    console.log("   Task Queue:", taskQueuePda.toBase58());
+    console.log("   Task PDA:", taskPda.toBase58());
+    console.log("   Task ID:", taskId);
+    console.log("   Queue Authority (our PDA):", queueAuthorityPda.toBase58());
+    console.log(
+      "   TukTuk Task Queue Authority:",
+      tuktukTaskQueueAuthority.toBase58()
+    );
 
     try {
-      const tx = new anchor.web3.Transaction().add(queueIx);
-      tx.feePayer = payer.publicKey;
-      tx.recentBlockhash = (
-        await provider.connection.getLatestBlockhash()
-      ).blockhash;
+      // Build the schedule instruction call
+      const scheduleCall = program.methods
+        .schedule(taskId, compiledTx)
+        .accountsPartial({
+          user: payer.publicKey,
+          userAccount: userAccountPda,
+          taskQueue: taskQueuePda,
+          taskQueueAuthority: tuktukTaskQueueAuthority,
+          task: taskPda,
+          queueAuthority: queueAuthorityPda,
+          systemProgram: SystemProgram.programId,
+          tuktukProgram: TUKTUK_PROGRAM_ID,
+        })
+        .remainingAccounts(remainingAccounts);
 
-      // Sign & send via raw connection to bypass Anchor provider entirely
-      const signedTx = await payer.signTransaction(tx);
-      const sig = await provider.connection.sendRawTransaction(
-        signedTx.serialize(),
-        { skipPreflight: true }
-      );
-      await provider.connection.confirmTransaction(sig, "confirmed");
-      console.log(`✅ VRF Task Queued! Tx: ${sig}`);
+      // Simulate first to see logs
+      console.log("🔍 Simulating schedule transaction...");
+      try {
+        const simResult = await scheduleCall.simulate();
+        console.log("✅ Simulation passed!");
+        if (simResult.events) console.log("Events:", simResult.events);
+      } catch (simErr: any) {
+        console.error("❌ Simulation failed:", simErr.message);
+        if (simErr.simulationResponse?.logs) {
+          console.error("Simulation logs:");
+          simErr.simulationResponse.logs.forEach((l: string) =>
+            console.error("  ", l)
+          );
+        }
+        if (simErr.logs) {
+          console.error("Error logs:");
+          simErr.logs.forEach((l: string) => console.error("  ", l));
+        }
+        throw simErr;
+      }
+
+      // If simulation passes, send the transaction
+      const tx = await scheduleCall.rpc({ skipPreflight: false });
+      console.log(`✅ VRF Task Scheduled On-Chain! Tx: ${tx}`);
     } catch (e: any) {
-      console.error("❌ queueTask error:", e.message);
+      console.error("❌ Schedule error:", e.message || JSON.stringify(e, null, 2));
       if (e.logs) console.error("Logs:", e.logs);
-      if (e.error) console.error("Inner error:", JSON.stringify(e.error));
       throw e;
     }
   });

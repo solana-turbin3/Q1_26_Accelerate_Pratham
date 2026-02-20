@@ -116,7 +116,7 @@ describe("er-state-account", () => {
     console.log("Delegated to ER ⚡");
   });
 
-  it("Step 4: Task 2 - VRF on Ephemeral Rollup", async () => {
+    it("Step 4: Task 2 - VRF on Ephemeral Rollup", async () => {
     console.log("   Requesting randomness on ER...");
     const tx = await programUserER.methods
       .requestRandomness()
@@ -129,9 +129,25 @@ describe("er-state-account", () => {
       .transaction();
 
     tx.feePayer = testUser.publicKey;
+    console.log("   Fetching ER blockhash...");
     tx.recentBlockhash = (await connectionER.getLatestBlockhash()).blockhash;
     tx.sign(testUser);
 
+    // Check balance on ER
+    const balance = await connectionER.getBalance(testUser.publicKey);
+    console.log("   ER Balance for user:", balance);
+    if (balance < 0.01 * LAMPORTS_PER_SOL) {
+        console.log("   Requesting Airdrop on ER...");
+        try {
+            const sig = await connectionER.requestAirdrop(testUser.publicKey, 1 * LAMPORTS_PER_SOL);
+            await connectionER.confirmTransaction(sig);
+            console.log("   Airdrop successful");
+        } catch (e) {
+            console.log("   Airdrop failed:", e);
+        }
+    }
+
+    console.log("   Sending ER transaction...");
     const txHash = await connectionER.sendRawTransaction(tx.serialize(), { skipPreflight: true });
     console.log("Task 2 VRF Executed on ER. Signature:", txHash);
 

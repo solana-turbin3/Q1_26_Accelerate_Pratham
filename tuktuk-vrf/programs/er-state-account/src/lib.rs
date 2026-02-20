@@ -9,7 +9,7 @@ mod state;
 
 use instructions::*;
 
-declare_id!("2DLPhRMLhZuWimqXRi87gQh3UwpyJQT6QBnBEGvD7ET2");
+declare_id!("2RuRYnQYofQLhnCJ3Ywo9atAD7xiiCK3MkaHR8ryYoSC");
 
 #[ephemeral]
 #[program]
@@ -60,6 +60,16 @@ pub mod er_state_account {
 
     pub fn consume_randomness(ctx: Context<ConsumeRandomness>, randomness: [u8; 32]) -> Result<()> {
         ctx.accounts.consume_randomness(randomness)?;
+        Ok(())
+    }
+
+    pub fn schedule<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Schedule<'info>>,
+        task_id: u16,
+        compiled_tx: CompiledTransactionArg,
+    ) -> Result<()> {
+        ctx.accounts
+            .schedule(task_id, compiled_tx, ctx.bumps, ctx.remaining_accounts)?;
         Ok(())
     }
 }
