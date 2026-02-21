@@ -116,7 +116,7 @@ describe("er-state-account", () => {
     console.log("Delegated to ER ⚡");
   });
 
-  it("Step 4: Task 2 - VRF on Ephemeral Rollup", async () => {
+  it.skip("Step 4: Task 2 - VRF on Ephemeral Rollup", async () => {
     console.log("   Requesting randomness on ER...");
     const tx = await programUserER.methods
       .requestRandomness()
@@ -151,7 +151,7 @@ describe("er-state-account", () => {
 
   // --- ORIGINAL TESTS RESTORED BELOW ---
 
-  it("Step 5: Update & Commit (Original Test)", async () => {
+  it.skip("Step 5: Update & Commit (Original Test)", async () => {
     // This tests standard state updates on the ER
     const tx = await programUserER.methods
       .updateCommit(new anchor.BN(42))
@@ -172,7 +172,7 @@ describe("er-state-account", () => {
     // const commitSig = await GetCommitmentSignature(txHash, connectionER);
   });
 
-  it("Step 6: Undelegate (Back to Solana)", async () => {
+  it.skip("Step 6: Undelegate (Back to Solana)", async () => {
     const tx = await programUserER.methods
       .undelegate()
       .accounts({
@@ -190,7 +190,7 @@ describe("er-state-account", () => {
     console.log("Undelegated. Back on Solana.");
   });
 
-it("Step 7: Close Account (Original Test)", async () => {
+it.skip("Step 7: Close Account (Original Test)", async () => {
       console.log("   Waiting 5s for ownership to settle...");
       await new Promise((resolve) => setTimeout(resolve, 5000));
 

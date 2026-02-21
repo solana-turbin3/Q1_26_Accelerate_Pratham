@@ -1,4 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
+import * as dns from "dns";
+dns.setDefaultResultOrder("ipv4first");
 import { Program, Wallet } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { SYSTEM_PROGRAM_ID } from "@coral-xyz/anchor/dist/cjs/native/system";
@@ -6,7 +8,19 @@ import { GptOracleMbTuktuk } from "../target/types/gpt_oracle_mb_tuktuk";
 import { init as initTuktuk, taskQueueAuthorityKey } from "@helium/tuktuk-sdk";
 
 describe("gpt-oracle-mb-tuktuk", () => {
-  const provider = anchor.AnchorProvider.env();
+  const connection = new anchor.web3.Connection(
+    "https://devnet.helius-rpc.com/?api-key=e327c5e3-7e6f-4bcc-b9da-835d3d9a8025",
+    {
+      commitment: "confirmed",
+      confirmTransactionInitialTimeout: 60000,
+    }
+  );
+
+  const provider = new anchor.AnchorProvider(
+    connection,
+    anchor.AnchorProvider.env().wallet,
+    { preflightCommitment: "confirmed" }
+  );
   anchor.setProvider(provider);
 
   const wallet = provider.wallet as Wallet;
@@ -126,30 +140,34 @@ describe("gpt-oracle-mb-tuktuk", () => {
       const tqAuthInfo = await provider.connection.getAccountInfo(tqAuthPda);
       if (!tqAuthInfo) {
         console.log("Registering queue authority...");
-        const regTx = await tuktukProgram.methods
+        const builder = tuktukProgram.methods
           .addQueueAuthorityV0()
           .accounts({
             payer: wallet.publicKey,
             queueAuthority,
             taskQueue: TASK_QUEUE,
-          })
-          .rpc({ skipPreflight: true, commitment: "confirmed" });
-        console.log("Registered:", regTx);
+          });
+        let regTx = await builder.transaction();
+        regTx.feePayer = wallet.publicKey;
+        regTx.recentBlockhash = (await provider.connection.getLatestBlockhash()).blockhash;
+        regTx = await wallet.signTransaction(regTx);
+        const rawRegTx = regTx.serialize();
+        const regTxId = await provider.connection.sendRawTransaction(rawRegTx, { skipPreflight: true });
+        await provider.connection.confirmTransaction(regTxId, "confirmed");
+        console.log("Registered:", regTxId);
       } else {
         console.log("Queue authority already registered.");
       }
 
       // Find free task id from bitmap
-      const tqRaw = (await tuktukProgram.account.taskQueueV0.fetch(TASK_QUEUE)) as any;
+      // Find free task id from bitmap
+      const tqRaw = await tuktukProgram.account.taskQueueV0.fetch(TASK_QUEUE);
       let taskId = 0;
-      for (let i = 0; i < tqRaw.taskBitmap.length; i++) {
-        if (tqRaw.taskBitmap[i] !== 0xff) {
-          for (let bit = 0; bit < 8; bit++) {
-            if ((tqRaw.taskBitmap[i] & (1 << bit)) === 0) {
-              taskId = i * 8 + bit;
-              break;
-            }
-          }
+      for (let i = 0; i < tqRaw.capacity; i++) {
+        const byteIdx = Math.floor(i / 8);
+        const bitIdx = i % 8;
+        if ((tqRaw.taskBitmap[byteIdx] & (1 << bitIdx)) === 0) {
+          taskId = i;
           break;
         }
       }
@@ -172,7 +190,7 @@ describe("gpt-oracle-mb-tuktuk", () => {
       console.log("task_id:", taskId);
       console.log("task:", taskAccount.toBase58());
 
-      const tx = await program.methods
+      const builder = program.methods
         .schedule(taskId)
         .accountsPartial({
           payer: wallet.publicKey,
@@ -185,13 +203,55 @@ describe("gpt-oracle-mb-tuktuk", () => {
           queueAuthority,
           tuktukProgram: TUKTUK_PROGRAM_ID,
           systemProgram: SYSTEM_PROGRAM_ID,
-        })
-        .rpc({ skipPreflight: true, commitment: "confirmed" });
+        });
+      let tx = await builder.transaction();
+      tx.feePayer = wallet.publicKey;
+      tx.recentBlockhash = (await provider.connection.getLatestBlockhash()).blockhash;
+      tx = await wallet.signTransaction(tx);
+      const rawTx = tx.serialize();
+      const txid = await provider.connection.sendRawTransaction(rawTx, { skipPreflight: true });
+      await provider.connection.confirmTransaction(txid, "confirmed");
 
-      console.log("Schedule tx:", tx);
+      console.log("Schedule tx:", txid);
       console.log(
         `\nhttps://explorer.solana.com/address/${program.programId.toBase58()}?cluster=devnet`
       );
+
+      console.log("\n   ⏳ Waiting 15 seconds for GPT Oracle callback...");
+      await new Promise((resolve) => setTimeout(resolve, 15000));
+
+      const sigs = await provider.connection.getSignaturesForAddress(program.programId, { limit: 10 });
+      console.log("   🔍 Checking logs for Oracle Response...");
+      for (const sigInfo of sigs) {
+        const txInfo = await provider.connection.getTransaction(sigInfo.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+        if (txInfo && txInfo.meta && txInfo.meta.logMessages) {
+          const logs = txInfo.meta.logMessages.join('\n');
+          if (logs.includes("Response: ")) {
+            const match = logs.match(/Response: "(.*?)"/);
+            if (match) {
+              console.log("\n   🤖 GPT Oracle Response 🤖");
+              console.log(`   "${match[1]}"\n`);
+              break;
+            }
+          }
+        }
+      }
+    });
+  });
+
+  describe("Teardown", () => {
+    it("Closes User Account and Reclaims Rent", async () => {
+      const [userAccountPda] = getUserAccountPda();
+
+      const tx = await program.methods
+        .closeUser()
+        .accountsPartial({
+          payer: wallet.publicKey,
+          userAccount: userAccountPda,
+        })
+        .rpc();
+
+      console.log("✅ User Account Closed! Rent reclaimed. Tx:", tx);
     });
   });
 });

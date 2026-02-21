@@ -1,3 +1,5 @@
+import * as dns from "dns";
+dns.setDefaultResultOrder("ipv4first");
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
@@ -28,12 +30,24 @@ const TUKTUK_CONFIG = PublicKey.findProgramAddressSync(
 )[0];
 
 describe("Perpetual Lottery Cron", () => {
-  const provider = anchor.AnchorProvider.env();
+  const connection = new anchor.web3.Connection(
+    "https://devnet.helius-rpc.com/?api-key=e327c5e3-7e6f-4bcc-b9da-835d3d9a8025",
+    {
+      commitment: "confirmed",
+      confirmTransactionInitialTimeout: 60000,
+    }
+  );
+
+  const provider = new anchor.AnchorProvider(
+    connection,
+    anchor.AnchorProvider.env().wallet,
+    { preflightCommitment: "confirmed" }
+  );
   anchor.setProvider(provider);
   const program = anchor.workspace.ErStateAccount as Program<ErStateAccount>;
   const payer = provider.wallet as anchor.Wallet;
 
-  const queueName = "lottery_queue";
+  const queueName = `lottery_${Math.floor(Date.now() / 1000)}`;
   let taskQueuePda: PublicKey;
 
   // User Account PDA
@@ -58,19 +72,26 @@ describe("Perpetual Lottery Cron", () => {
       console.log("✅ Task Queue already exists:", taskQueuePda.toBase58());
     } else {
       try {
-        const { pubkeys: { taskQueue: tqPubkey } } = await (
-          await createTaskQueue(tuktukProgram, {
+        const builder = await createTaskQueue(tuktukProgram, {
             name: queueName,
             minCrankReward: new anchor.BN(10_000),
             capacity: 10,
             lookupTables: [],
             staleTaskAge: 60 * 60 * 48,
-          })
-        ).rpcAndKeys({ skipPreflight: true });
+          });
+        let tx = await builder.transaction();
+        tx.feePayer = payer.publicKey;
+        tx.recentBlockhash = (await provider.connection.getLatestBlockhash()).blockhash;
+        tx = await payer.signTransaction(tx);
+        const rawTx = tx.serialize();
+        const txid = await provider.connection.sendRawTransaction(rawTx, { skipPreflight: true });
+        await provider.connection.confirmTransaction(txid);
+        const tqPubkey = (await builder.pubkeys()).taskQueue;
         taskQueuePda = tqPubkey!;
         console.log("✅ Task Queue Created:", taskQueuePda.toBase58());
       } catch (e: any) {
-        console.log("⚠️ Queue creation error:", e.message || e);
+        console.log("⚠️ Queue creation error full stack:", e.stack || e);
+        console.log("Original error:", e);
         resolved = await getTaskQueueForName(tuktukProgram, queueName);
         if (resolved) {
           taskQueuePda = resolved;

@@ -7,7 +7,7 @@ mod state;
 
 use instructions::*;
 
-declare_id!("46Ep45sLrFK7cFGSgTMDyXWtywQ2QSj9zAtPHscZTg8z");
+declare_id!("FkXQUHMpyf5YT3o7ZWRbxfGryjA5LW6SLTiz9LGSp22b");
 
 #[program]
 pub mod gpt_oracle_mb_tuktuk {

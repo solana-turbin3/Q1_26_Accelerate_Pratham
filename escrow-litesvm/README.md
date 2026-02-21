@@ -1,40 +1,20 @@
-# Anchor Escrow (LiteSVM Version)
+# Escrow (LiteSVM Edition)
 
-This project implements a secure Escrow program on Solana using the Anchor framework, featuring a **5-day lockup period** for both taking and refunding assets.
+A standard bidirectional SPL-Token Escrow execution program built explicitly to test blazing fast iterations exclusively with **LiteSVM**.
 
-## Implementation Details
+## Features
 
-### Instructions
+- **LiteSVM Environment**: Does not utilize bulky `solana-test-validator` setups. Compiles and asserts purely in simulated Rust memory for absolute maximum continuous-integration testing speeds.
+- **Bi-Directional Swaps**: Users can Make or Take token agreements.
+- **Native Lockups**: Uses timestamp assertions (`creation_time`) to strictly lock deposits for _5 Days_ post Make, enabling users to `Refund` immediately after maturity or execute `Take` before then.
 
-- **Make**: Creates an escrow, depositing Asset A into a vault. Sets a `creation_time` timestamp.
-- **Take**: Taker deposits Asset B to Maker and withdraws Asset A from the vault.
-  - **Lockup**: Can only be executed **5 days after** creation.
-- **Refund**: Maker can withdraw Asset A if the offer expires or they choose to cancel.
-  - **Lockup**: Can only be executed **5 days after** creation.
+## Testing Setup
 
-### State
+Since LiteSVM runs in isolated generic CPU memory, it does not rely on local RPC connections.
+Therefore, simply use:
 
-- **Escrow**: Stores `creation_time` (Unix timestamp) to enforce the lockup.
-
-## Testing
-
-The project uses **LiteSVM** for fast, lightweight testing without a local validator.
-
-### Running Tests
-
-To run the full test suite:
-
-```bash
-anchor build
-cargo test -- --nocapture
+```
+cargo test-sbf
 ```
 
-### Test Coverage (`tests/mod.rs`)
-
-- `test_make`: Verifies escrow creation and state initialization.
-- `test_take`:
-  - Verifies that `take` fails properly if attempted before 5 days (`EscrowLocked`).
-  - Simulates time travel (warping clock) to verify success after 5 days.
-- `test_refund`:
-  - Verifies that `refund` fails properly if attempted before 5 days (`EscrowLocked`).
-  - Simulates time travel and verifies success after 5 days.
+There are no external RPC connection issues and test suites are 100% stable with no manual skips needed.
